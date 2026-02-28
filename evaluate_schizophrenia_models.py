@@ -141,7 +141,8 @@ models = {
         "pipeline": Pipeline([
             ("imputer", SimpleImputer(strategy="median")),
             ("clf", RandomForestClassifier(
-                n_estimators=300, max_depth=12, min_samples_leaf=5,
+                n_estimators=500, max_depth=None, min_samples_leaf=3,
+                max_features="sqrt",
                 random_state=SEED, n_jobs=-1)),
         ]),
         "features": feature_names,
@@ -150,7 +151,7 @@ models = {
         "pipeline": Pipeline([
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
-            ("clf", SVC(kernel="rbf", C=1.0, gamma="scale",
+            ("clf", SVC(kernel="rbf", C=10.0, gamma="scale",
                         probability=True, random_state=SEED)),
         ]),
         "features": feature_names,
@@ -159,8 +160,9 @@ models = {
         "pipeline": Pipeline([
             ("imputer", SimpleImputer(strategy="median")),
             ("clf", XGBClassifier(
-                n_estimators=300, max_depth=6, learning_rate=0.1,
-                subsample=0.8, colsample_bytree=0.8,
+                n_estimators=400, max_depth=4, learning_rate=0.05,
+                subsample=0.8, colsample_bytree=0.7,
+                min_child_weight=3, reg_alpha=0.1,
                 random_state=SEED, eval_metric="logloss",
                 verbosity=0, n_jobs=-1)),
         ]),
@@ -171,10 +173,10 @@ models = {
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
             ("clf", MLPClassifier(
-                hidden_layer_sizes=(64, 32, 16), activation="relu",
-                solver="adam", max_iter=500, random_state=SEED,
+                hidden_layer_sizes=(128, 64, 32), activation="relu",
+                solver="adam", max_iter=800, random_state=SEED,
                 early_stopping=True, validation_fraction=0.15,
-                learning_rate="adaptive")),
+                learning_rate="adaptive", alpha=0.001)),
         ]),
         "features": feature_names,
     },

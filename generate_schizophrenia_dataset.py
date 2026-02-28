@@ -12,9 +12,30 @@ controls) with:
 - Demographic covariates (age, sex) with mild confounding
 - ~5% missing data at random
 
-All values reflect published literature ranges for schizophrenia biomarkers
-while maintaining substantial group overlap to ensure realistic
-misclassification rates.
+DESIGN NOTES — Realistic difficulty + ML advantage:
+  Linear (main-effect) signal is deliberately WEAK (Cohen's d ≈ 0.10-0.20
+  per biomarker) so logistic regression achieves only moderate AUC.
+
+  Additional signal is embedded directly as NONLINEAR INTERACTIONS in the
+  observable features — NOT funneled through a smooth latent variable:
+
+    • Gene-gene epistasis drives biomarker subgroups:
+      - C4A × COMT carriers (cases) → strong glutamate spike + GSH drop
+      - DRD2 × BDNF carriers (cases) → elevated cytokines
+      - GRIN2A × GRM3 carriers (cases) → lactate + lipid shift
+    • Threshold effects:
+      - High glutamate + low GSH (cases) → extra push
+      - High TG + low HDL (cases) → extra push
+    • Age × gene interaction:
+      - Young (<30) COMT+ cases → amplified inflammatory signal
+
+  These create distinct subpopulations where COMBINATIONS of features are
+  shifted, but marginal distributions heavily overlap. Trees/SVMs/NNs can
+  learn these interaction rules; logistic regression (on raw features) cannot.
+
+  Target performance:
+    Logistic regression:  AUC ≈ 0.70-0.76
+    Best ML model:        AUC ≈ 0.82-0.88
 """
 
 import numpy as np
@@ -33,14 +54,10 @@ N_TOTAL = N_CASES + N_CONTROLS
 # ============================================================================
 
 def generate_demographics(n_cases, n_controls):
-    """Generate age and sex with mild confounding.
-
-    Schizophrenia has a slight male preponderance (~1.4:1) and typical onset
-    in early adulthood.  We sample a broad clinical age range.
-    """
-    sex_cases = np.random.binomial(1, 0.58, n_cases)       # 58 % male
-    sex_controls = np.random.binomial(1, 0.48, n_controls)  # 48 % male
-    sex = np.concatenate([sex_cases, sex_controls])  # 1 = male, 0 = female
+    """Generate age and sex with mild confounding."""
+    sex_cases = np.random.binomial(1, 0.58, n_cases)
+    sex_controls = np.random.binomial(1, 0.48, n_controls)
+    sex = np.concatenate([sex_cases, sex_controls])
 
     age_cases = np.clip(
         np.random.normal(36, 11, n_cases), 18, 70
@@ -58,10 +75,9 @@ def generate_demographics(n_cases, n_controls):
 
 
 # ============================================================================
-# 2. Genetic Variants  (polygenic risk architecture)
+# 2. Genetic Variants
 # ============================================================================
 
-# Realistic rsIDs for schizophrenia-associated variants per gene.
 VARIANT_CATALOG = {
     "C4A":     ["rs204991",   "rs3132468", "rs2071278"],
     "DRD2":    ["rs1801028",  "rs6277",    "rs1800497"],
@@ -73,24 +89,23 @@ VARIANT_CATALOG = {
     "BDNF":    ["rs6265",     "rs7103411", "rs2049046"],
 }
 
-# (freq_in_cases, freq_in_controls, approximate OR)
-# MAFs 5-40 %, ORs 1.2-1.8 → polygenic, non-deterministic
+# (freq_in_cases, freq_in_controls)
 GENE_PARAMS = {
-    "C4A":     (0.35, 0.22, 1.8),
-    "DRD2":    (0.28, 0.20, 1.5),
-    "GRM3":    (0.22, 0.16, 1.5),
-    "GRIN2A":  (0.18, 0.12, 1.6),
-    "SLC39A8": (0.10, 0.07, 1.5),
-    "DISC1":   (0.15, 0.10, 1.6),
-    "COMT":    (0.40, 0.32, 1.4),
-    "BDNF":    (0.30, 0.22, 1.5),
+    "C4A":     (0.30, 0.22),
+    "DRD2":    (0.25, 0.20),
+    "GRM3":    (0.20, 0.16),
+    "GRIN2A":  (0.16, 0.12),
+    "SLC39A8": (0.09, 0.07),
+    "DISC1":   (0.13, 0.10),
+    "COMT":    (0.38, 0.32),
+    "BDNF":    (0.28, 0.22),
 }
 
 
 def generate_genetic_variants(n_cases, n_controls):
     """Generate binary variant presence + specific rsID per gene."""
     data = {}
-    for gene, (freq_case, freq_ctrl, _) in GENE_PARAMS.items():
+    for gene, (freq_case, freq_ctrl) in GENE_PARAMS.items():
         presence_cases = np.random.binomial(1, freq_case, n_cases)
         presence_controls = np.random.binomial(1, freq_ctrl, n_controls)
         presence = np.concatenate([presence_cases, presence_controls])
@@ -107,350 +122,357 @@ def generate_genetic_variants(n_cases, n_controls):
 
 
 # ============================================================================
-# 3. Polygenic risk / latent severity score
+# 3. Baseline biomarkers (NEAR-IDENTICAL distributions for cases/controls)
+#    The tiny main effects alone give logistic regression minimal power.
 # ============================================================================
 
-def compute_polygenic_score(diagnosis, age, sex, genetic_data):
+def generate_baseline_biomarkers(n, age, sex):
     """
-    Latent score in [0, 1] that drives biomarker shifts.
-
-    For cases: moderate score with genetic burden + demographic components.
-    For controls: low score with some noise (ensures overlap).
+    Generate biomarkers from SHARED population distributions.
+    No case/control separation at this stage — both groups drawn from
+    the same physiological range with identical means.
+    Age and sex confounders are applied.
     """
-    n = len(diagnosis)
-    score = np.zeros(n)
+    data = {}
 
-    gene_weights = {
-        "C4A": 0.20, "DRD2": 0.15, "GRM3": 0.12, "GRIN2A": 0.12,
-        "SLC39A8": 0.08, "DISC1": 0.10, "COMT": 0.13, "BDNF": 0.10,
-    }
-    burden = np.zeros(n)
-    for gene, w in gene_weights.items():
-        burden += genetic_data[f"{gene}_variant_present"] * w
-
-    case_mask = diagnosis == 1
-    ctrl_mask = diagnosis == 0
-
-    score[case_mask] = (
-        0.20
-        + 0.25 * burden[case_mask]
-        + 0.04 * ((age[case_mask] - 18) / 52)
-        + 0.03 * sex[case_mask]
-        + np.random.normal(0, 0.10, case_mask.sum())
-    )
-    score[ctrl_mask] = (
-        0.06
-        + 0.10 * burden[ctrl_mask]
-        + 0.02 * ((age[ctrl_mask] - 18) / 52)
-        + np.random.normal(0, 0.06, ctrl_mask.sum())
-    )
-    return np.clip(score, 0, 1)
-
-
-# ============================================================================
-# 4. Biochemical / Metabolomic Variables
-# ============================================================================
-
-def generate_amino_acids_and_metabolites(diagnosis, severity, age, sex):
-    """
-    Serum glutamate, serine, alanine, lactate, citrate, and urea-cycle
-    intermediates (ornithine, citrulline, arginine).
-
-    Cases show mild glutamate elevation and subtle perturbations in
-    one-carbon / urea-cycle metabolism.
-    """
-    n = len(diagnosis)
-    case = diagnosis == 1
-
-    # --- Serum glutamate (µmol/L) ---
-    # Normal ~20-80; cases mildly elevated (literature: ~+10-15 %)
-    glutamate = np.where(
-        case,
-        np.random.normal(58 + severity * 12, 14, n),
-        np.random.normal(48, 13, n),
-    )
-    glutamate = np.clip(glutamate, 10, 120).round(1)
-
-    # --- Serine (µmol/L) ---
-    # Normal ~80-150; cases show slight reduction
-    serine = np.where(
-        case,
-        np.random.normal(105 - severity * 8, 18, n),
-        np.random.normal(115, 20, n),
-    )
-    serine = np.clip(serine, 40, 200).round(1)
-
-    # --- Alanine (µmol/L) ---
-    # Normal ~200-500; mild increase in cases
-    alanine = np.where(
-        case,
-        np.random.normal(350 + severity * 20, 60, n),
-        np.random.normal(330, 55, n),
-    )
-    alanine = np.clip(alanine, 100, 600).round(1)
-
-    # --- Lactate (mmol/L) ---
-    # Normal 0.5-2.2; slight elevation in cases (energy metabolism)
-    lactate = np.where(
-        case,
-        np.random.normal(1.35 + severity * 0.3, 0.35, n),
-        np.random.normal(1.10, 0.30, n),
-    )
-    lactate = np.clip(lactate, 0.3, 3.5).round(2)
-
-    # --- Citrate (µmol/L) ---
-    # Normal ~80-160
-    citrate = np.where(
-        case,
-        np.random.normal(115 - severity * 6, 22, n),
-        np.random.normal(120, 20, n),
-    )
-    citrate = np.clip(citrate, 40, 220).round(1)
-
-    # --- Ornithine (µmol/L) ---
-    # Normal ~30-100
-    ornithine = np.where(
-        case,
-        np.random.normal(68 + severity * 8, 16, n),
-        np.random.normal(60, 14, n),
-    )
-    ornithine = np.clip(ornithine, 15, 140).round(1)
-
-    # --- Citrulline (µmol/L) ---
-    # Normal ~15-55
-    citrulline = np.where(
-        case,
-        np.random.normal(33 + severity * 4, 8, n),
-        np.random.normal(30, 7, n),
-    )
-    citrulline = np.clip(citrulline, 8, 70).round(1)
-
-    # --- Arginine (µmol/L) ---
-    # Normal ~40-120; mild decrease (NO pathway consumption in cases)
-    arginine = np.where(
-        case,
-        np.random.normal(72 - severity * 6, 15, n),
-        np.random.normal(80, 16, n),
-    )
-    arginine = np.clip(arginine, 20, 160).round(1)
-
-    return {
-        "serum_glutamate": glutamate,
-        "serine": serine,
-        "alanine": alanine,
-        "lactate": lactate,
-        "citrate": citrate,
-        "ornithine": ornithine,
-        "citrulline": citrulline,
-        "arginine": arginine,
-    }
-
-
-def generate_lipid_panel(diagnosis, severity, age, sex):
-    """
-    Triglycerides, LDL, HDL, VLDL, total phospholipids, sphingolipids.
-
-    Cases show mild dyslipidemia: elevated triglycerides/VLDL, lower HDL.
-    Age positively correlates with triglycerides.
-    Triglycerides and VLDL are correlated (VLDL ≈ TG/5 + noise).
-    """
-    n = len(diagnosis)
-    case = diagnosis == 1
-
-    # Age contribution to triglycerides (~0.8 mg/dL per year over 30)
-    age_tg_shift = np.clip((age - 30) * 0.8, 0, 40)
-
-    # --- Triglycerides (mg/dL) ---
-    # Normal <150; cases mildly elevated
-    triglycerides = np.where(
-        case,
-        np.random.normal(145 + severity * 30, 42, n),
-        np.random.normal(120, 38, n),
-    )
-    triglycerides += age_tg_shift
-    triglycerides += sex * np.random.normal(6, 3, n)  # males slightly higher
-    triglycerides = np.clip(triglycerides, 40, 400).round(1)
-
-    # --- VLDL (mg/dL) ~ TG/5 with noise ---
-    vldl = triglycerides / 5.0 + np.random.normal(0, 3, n)
-    vldl = np.clip(vldl, 5, 80).round(1)
-
-    # --- LDL (mg/dL) ---
-    # Normal <130; slight elevation in cases
-    ldl = np.where(
-        case,
-        np.random.normal(125 + severity * 10, 30, n),
-        np.random.normal(115, 28, n),
-    )
-    ldl += age * 0.2  # mild age increase
-    ldl = np.clip(ldl, 50, 220).round(1)
-
-    # --- HDL (mg/dL) ---
-    # Normal 40-60 M, 50-70 F; lower in cases
-    base_hdl = np.where(sex == 1, 48, 58)
-    hdl = np.where(
-        case,
-        np.random.normal(base_hdl - severity * 6, 10, n),
-        np.random.normal(base_hdl + 3, 11, n),
-    )
-    hdl = np.clip(hdl, 20, 95).round(1)
-
-    # --- Total phospholipids (mg/dL) ---
-    # Normal ~150-280
-    phospholipids = np.where(
-        case,
-        np.random.normal(215 + severity * 8, 30, n),
-        np.random.normal(210, 28, n),
-    )
-    phospholipids = np.clip(phospholipids, 100, 350).round(1)
-
-    # --- Sphingolipids (µmol/L) ---
-    # Normal ~200-400; mild dysregulation in cases
-    sphingolipids = np.where(
-        case,
-        np.random.normal(310 + severity * 15, 45, n),
-        np.random.normal(290, 40, n),
-    )
-    sphingolipids = np.clip(sphingolipids, 100, 500).round(1)
-
-    return {
-        "triglycerides": triglycerides,
-        "ldl": ldl,
-        "hdl": hdl,
-        "vldl": vldl,
-        "total_phospholipids": phospholipids,
-        "sphingolipids": sphingolipids,
-    }
-
-
-def generate_redox_and_no(diagnosis, severity):
-    """
-    Reduced glutathione (GSH) and nitric oxide (NO).
-
-    Cases show reduced GSH (oxidative stress) and mildly elevated NO.
-    GSH inversely correlates with inflammatory markers (implemented
-    downstream via the correlation injection step).
-    """
-    n = len(diagnosis)
-    case = diagnosis == 1
-
-    # --- Reduced glutathione (µmol/L) ---
-    # Normal ~700-1100; lower in cases
-    gsh = np.where(
-        case,
-        np.random.normal(830 - severity * 80, 100, n),
-        np.random.normal(920, 95, n),
-    )
-    gsh = np.clip(gsh, 400, 1300).round(1)
-
-    # --- Nitric oxide (µmol/L) ---
-    # Normal ~20-60; mildly elevated in cases (neuroinflammation)
-    no = np.where(
-        case,
-        np.random.normal(42 + severity * 8, 10, n),
-        np.random.normal(36, 9, n),
-    )
-    no = np.clip(no, 8, 80).round(1)
-
-    return {"reduced_glutathione": gsh, "nitric_oxide": no}
-
-
-def generate_inflammatory_cytokines(diagnosis, severity):
-    """
-    IL-6, TNF-α, IL-8 with positively correlated noise.
-
-    Cases show mild elevation of all three pro-inflammatory cytokines.
-    A shared latent inflammation factor creates inter-cytokine
-    correlation (r ≈ 0.35-0.55).
-    """
-    n = len(diagnosis)
-    case = diagnosis == 1
-
-    # Shared inflammation factor (induces positive correlation)
-    inflammation_factor = np.where(
-        case,
-        np.random.normal(0.3 + severity * 0.4, 0.25, n),
-        np.random.normal(0.0, 0.20, n),
-    )
-
-    # --- IL-6 (pg/mL) ---
-    # Normal <7; cases mildly elevated (meta-analyses: ~+1-3 pg/mL)
-    il6 = np.where(
-        case,
-        np.random.normal(4.5 + severity * 2.5, 2.0, n),
-        np.random.normal(2.8, 1.6, n),
-    )
-    il6 += inflammation_factor * 1.5
-    il6 = np.clip(il6, 0.3, 20).round(2)
-
-    # --- TNF-α (pg/mL) ---
-    # Normal <8; similar pattern
-    tnf_alpha = np.where(
-        case,
-        np.random.normal(6.0 + severity * 2.0, 2.2, n),
-        np.random.normal(4.2, 1.8, n),
-    )
-    tnf_alpha += inflammation_factor * 1.3
-    tnf_alpha = np.clip(tnf_alpha, 0.5, 22).round(2)
-
-    # --- IL-8 (pg/mL) ---
-    # Normal <10; mildly elevated in cases
-    il8 = np.where(
-        case,
-        np.random.normal(8.5 + severity * 2.5, 3.0, n),
-        np.random.normal(6.0, 2.5, n),
-    )
-    il8 += inflammation_factor * 1.8
-    il8 = np.clip(il8, 1.0, 30).round(2)
-
-    return {"il6": il6, "tnf_alpha": tnf_alpha, "il8": il8}
-
-
-# ============================================================================
-# 5. Inject additional correlation structure
-# ============================================================================
-
-def inject_correlations(df, diagnosis):
-    """
-    Apply residual correlation adjustments to ensure:
-    - Positive correlation among IL-6, TNF-α, IL-8  (already partly achieved
-      via shared inflammation factor; this reinforces it)
-    - Triglycerides positively correlated with VLDL  (already structural)
-    - Inverse correlation between GSH and inflammatory markers
-    - Mild multicollinearity among lipid variables
-    """
-    n = len(df)
-
-    # GSH–inflammation inverse coupling: shift GSH downward where cytokines
-    # are high (rank-based, preserving marginal distributions)
-    cytokine_mean = (
-        (df["il6"] - df["il6"].mean()) / df["il6"].std()
-        + (df["tnf_alpha"] - df["tnf_alpha"].mean()) / df["tnf_alpha"].std()
-        + (df["il8"] - df["il8"].mean()) / df["il8"].std()
-    ) / 3.0
-
-    gsh_shift = -cytokine_mean * 30  # ~ -30 µmol/L per 1 SD cytokine
-    df["reduced_glutathione"] = np.clip(
-        df["reduced_glutathione"] + gsh_shift, 400, 1300
+    # --- Amino acids & metabolites ---
+    data["serum_glutamate"] = np.clip(
+        np.random.normal(50, 15, n), 10, 120
     ).round(1)
 
-    # LDL–TG mild positive correlation
-    tg_z = (df["triglycerides"] - df["triglycerides"].mean()) / df["triglycerides"].std()
-    df["ldl"] = np.clip(
-        df["ldl"] + tg_z * 5, 50, 220
+    data["serine"] = np.clip(
+        np.random.normal(112, 22, n), 40, 200
     ).round(1)
 
-    # Phospholipids mildly correlated with total lipid burden
-    lipid_z = (tg_z + (df["ldl"] - df["ldl"].mean()) / df["ldl"].std()) / 2
-    df["total_phospholipids"] = np.clip(
-        df["total_phospholipids"] + lipid_z * 6, 100, 350
+    data["alanine"] = np.clip(
+        np.random.normal(335, 62, n), 100, 600
     ).round(1)
 
-    return df
+    data["lactate"] = np.clip(
+        np.random.normal(1.15, 0.36, n), 0.3, 3.5
+    ).round(2)
+
+    data["citrate"] = np.clip(
+        np.random.normal(118, 23, n), 40, 220
+    ).round(1)
+
+    data["ornithine"] = np.clip(
+        np.random.normal(61, 16, n), 15, 140
+    ).round(1)
+
+    data["citrulline"] = np.clip(
+        np.random.normal(30, 8, n), 8, 70
+    ).round(1)
+
+    data["arginine"] = np.clip(
+        np.random.normal(78, 17, n), 20, 160
+    ).round(1)
+
+    # --- Lipids (with age/sex confounding) ---
+    age_tg = np.clip((age - 30) * 0.8, 0, 40)
+    data["triglycerides"] = np.clip(
+        np.random.normal(128, 46, n) + age_tg + sex * 6,
+        40, 400
+    ).round(1)
+
+    data["vldl"] = np.clip(
+        data["triglycerides"] / 5.0 + np.random.normal(0, 3.5, n),
+        5, 80
+    ).round(1)
+
+    data["ldl"] = np.clip(
+        np.random.normal(118, 31, n) + age * 0.2,
+        50, 220
+    ).round(1)
+
+    base_hdl = np.where(sex == 1, 48.0, 58.0)
+    data["hdl"] = np.clip(
+        np.random.normal(base_hdl, 12, n),
+        20, 95
+    ).round(1)
+
+    data["total_phospholipids"] = np.clip(
+        np.random.normal(211, 31, n), 100, 350
+    ).round(1)
+
+    data["sphingolipids"] = np.clip(
+        np.random.normal(295, 47, n), 100, 500
+    ).round(1)
+
+    # --- Redox ---
+    data["reduced_glutathione"] = np.clip(
+        np.random.normal(910, 102, n), 400, 1300
+    ).round(1)
+
+    data["nitric_oxide"] = np.clip(
+        np.random.normal(37, 10, n), 8, 80
+    ).round(1)
+
+    # --- Cytokines ---
+    # Shared latent inflammation factor (population-wide)
+    infl = np.random.normal(0, 0.22, n)
+    data["il6"] = np.clip(
+        np.random.normal(3.0, 1.9, n) + infl * 1.2, 0.3, 20
+    ).round(2)
+    data["tnf_alpha"] = np.clip(
+        np.random.normal(4.4, 2.1, n) + infl * 1.0, 0.5, 22
+    ).round(2)
+    data["il8"] = np.clip(
+        np.random.normal(6.5, 2.9, n) + infl * 1.4, 1.0, 30
+    ).round(2)
+
+    return data
 
 
 # ============================================================================
-# 6. Introduce ~5 % missing data at random
+# 4. Apply WEAK linear main effects (what LR can catch — small)
+# ============================================================================
+
+def apply_weak_main_effects(data, diagnosis):
+    """
+    Apply WEAK main-effect shifts to case biomarkers (d ≈ 0.08-0.15).
+    This gives LR a modest baseline, but the bulk of the signal comes
+    from the interaction layer.
+    """
+    case = diagnosis == 1
+    nc = case.sum()
+
+    data["serum_glutamate"][case] += np.random.normal(1.5, 1.0, nc)
+    data["serine"][case] -= np.random.normal(1.5, 1.0, nc)
+    data["lactate"][case] += np.random.normal(0.03, 0.02, nc)
+    data["reduced_glutathione"][case] -= np.random.normal(10, 5, nc)
+    data["nitric_oxide"][case] += np.random.normal(1.5, 0.8, nc)
+    data["il6"][case] += np.random.normal(0.25, 0.15, nc)
+    data["tnf_alpha"][case] += np.random.normal(0.2, 0.12, nc)
+    data["il8"][case] += np.random.normal(0.25, 0.15, nc)
+    data["triglycerides"][case] += np.random.normal(4, 2.5, nc)
+    data["hdl"][case] -= np.random.normal(1.2, 0.8, nc)
+    data["ornithine"][case] += np.random.normal(1.0, 0.6, nc)
+    data["arginine"][case] -= np.random.normal(1.0, 0.6, nc)
+
+    return data
+
+
+# ============================================================================
+# 5. Apply STRONG nonlinear interaction effects
+#    These are conditional: they ONLY activate in specific gene × gene or
+#    gene × demographic subgroups among cases.  Controls with the same
+#    genotypes do NOT get the shift (disease-conditional epistasis).
+# ============================================================================
+
+def apply_nonlinear_interactions(data, diagnosis, age, sex, genetic_data):
+    """
+    Embed XOR-like interaction patterns that create a genuine ML advantage.
+
+    CORE MECHANISM — Bidirectional conditional effects:
+      The DIRECTION of a biomarker shift reverses based on genetic context.
+      This creates strong signal in the joint distribution but near-zero
+      signal in the marginals, because opposite shifts cancel out.
+
+      Example: COMT+ cases have HIGH glutamate / LOW GSH,
+               COMT- cases have LOW glutamate / HIGH GSH (protective shift).
+               Marginal glutamate ≈ same for cases and controls.
+               But trees learn: "if COMT=1 & glutamate>58 → case"
+                            and "if COMT=0 & glutamate<42 → case"
+               LR with a single coefficient for glutamate sees ~zero signal.
+
+    Three XOR axes, each controlled by a different gene:
+      1. COMT  → glutamate / GSH axis
+      2. BDNF  → cytokine / nitric oxide axis
+      3. DRD2  → lipid (TG, HDL) axis
+
+    Epistatic amplifiers (2-gene) stack additional signal.
+    Controls get tiny symmetric noise (no net shift).
+    """
+    case = diagnosis == 1
+    ctrl = diagnosis == 0
+    n = len(diagnosis)
+
+    comt = genetic_data["COMT_variant_present"].astype(bool)
+    bdnf = genetic_data["BDNF_variant_present"].astype(bool)
+    drd2 = genetic_data["DRD2_variant_present"].astype(bool)
+    c4a = genetic_data["C4A_variant_present"].astype(bool)
+    grin2a = genetic_data["GRIN2A_variant_present"].astype(bool)
+    grm3 = genetic_data["GRM3_variant_present"].astype(bool)
+    disc1 = genetic_data["DISC1_variant_present"].astype(bool)
+
+    # ================================================================
+    # XOR AXIS 1: COMT × glutamate/GSH
+    # COMT+ cases: glutamate ↑, GSH ↓
+    # COMT- cases: glutamate ↓, GSH ↑ (reversal!)
+    # Net marginal ≈ 0 → invisible to LR
+    # ================================================================
+    mask_comt_case = case & comt           # ~37% of cases
+    mask_nocomt_case = case & ~comt        # ~63% of cases
+    nc1 = mask_comt_case.sum()
+    nc2 = mask_nocomt_case.sum()
+
+    if nc1 > 0:
+        data["serum_glutamate"][mask_comt_case] += np.random.normal(14, 3.5, nc1)
+        data["reduced_glutathione"][mask_comt_case] -= np.random.normal(80, 18, nc1)
+        data["serine"][mask_comt_case] -= np.random.normal(10, 3, nc1)
+        data["lactate"][mask_comt_case] += np.random.normal(0.15, 0.05, nc1)
+
+    if nc2 > 0:
+        data["serum_glutamate"][mask_nocomt_case] -= np.random.normal(7, 2.5, nc2)
+        data["reduced_glutathione"][mask_nocomt_case] += np.random.normal(25, 10, nc2)
+        data["serine"][mask_nocomt_case] += np.random.normal(5, 2, nc2)
+
+    # ================================================================
+    # XOR AXIS 2: BDNF × cytokine/NO axis
+    # BDNF+ cases: IL-6 ↑, TNF-α ↑, IL-8 ↑, NO ↑
+    # BDNF- cases: IL-6 ↓ mildly (or flat), TNF-α ↓
+    # ================================================================
+    mask_bdnf_case = case & bdnf           # ~30%
+    mask_nobdnf_case = case & ~bdnf        # ~70%
+    nb1 = mask_bdnf_case.sum()
+    nb2 = mask_nobdnf_case.sum()
+
+    if nb1 > 0:
+        data["il6"][mask_bdnf_case] += np.random.normal(3.0, 0.7, nb1)
+        data["tnf_alpha"][mask_bdnf_case] += np.random.normal(2.5, 0.6, nb1)
+        data["il8"][mask_bdnf_case] += np.random.normal(3.0, 0.7, nb1)
+        data["nitric_oxide"][mask_bdnf_case] += np.random.normal(6, 1.8, nb1)
+
+    if nb2 > 0:
+        data["il6"][mask_nobdnf_case] -= np.random.normal(1.0, 0.4, nb2)
+        data["tnf_alpha"][mask_nobdnf_case] -= np.random.normal(0.8, 0.3, nb2)
+        data["il8"][mask_nobdnf_case] -= np.random.normal(0.8, 0.35, nb2)
+
+    # ================================================================
+    # XOR AXIS 3: DRD2 × lipid axis
+    # DRD2+ cases: TG ↑↑, HDL ↓↓
+    # DRD2- cases: TG ↓ mildly, HDL ↑ mildly
+    # ================================================================
+    mask_drd2_case = case & drd2           # ~26%
+    mask_nodrd2_case = case & ~drd2        # ~74%
+    nd1 = mask_drd2_case.sum()
+    nd2 = mask_nodrd2_case.sum()
+
+    if nd1 > 0:
+        data["triglycerides"][mask_drd2_case] += np.random.normal(38, 8, nd1)
+        data["hdl"][mask_drd2_case] -= np.random.normal(9, 2.5, nd1)
+        data["sphingolipids"][mask_drd2_case] += np.random.normal(22, 7, nd1)
+
+    if nd2 > 0:
+        data["triglycerides"][mask_nodrd2_case] -= np.random.normal(8, 3.5, nd2)
+        data["hdl"][mask_nodrd2_case] += np.random.normal(3, 1.5, nd2)
+
+    # ================================================================
+    # Epistatic amplifiers (stacked, same direction as parent axis)
+    # ================================================================
+
+    # C4A × COMT cases → amplified glutamate/GSH crash
+    mask_ep1 = case & c4a & comt
+    n1 = mask_ep1.sum()
+    if n1 > 0:
+        data["serum_glutamate"][mask_ep1] += np.random.normal(5, 2, n1)
+        data["reduced_glutathione"][mask_ep1] -= np.random.normal(25, 8, n1)
+
+    # DRD2 × BDNF cases → amplified cytokines
+    mask_ep2 = case & drd2 & bdnf
+    n2 = mask_ep2.sum()
+    if n2 > 0:
+        data["il6"][mask_ep2] += np.random.normal(1.5, 0.4, n2)
+        data["il8"][mask_ep2] += np.random.normal(1.5, 0.5, n2)
+
+    # GRIN2A × GRM3 cases → glutamate receptor synergy
+    mask_ep3 = case & grin2a & grm3
+    n3 = mask_ep3.sum()
+    if n3 > 0:
+        data["serum_glutamate"][mask_ep3] += np.random.normal(5, 2, n3)
+        data["lactate"][mask_ep3] += np.random.normal(0.12, 0.04, n3)
+
+    # Young (<30) × gene-carrier cases → age-dependent amplification
+    young = age < 30
+    mask_yg = case & young & (comt | bdnf | drd2)
+    nyg = mask_yg.sum()
+    if nyg > 0:
+        data["il6"][mask_yg] += np.random.normal(0.5, 0.2, nyg)
+        data["reduced_glutathione"][mask_yg] -= np.random.normal(15, 5, nyg)
+
+    # ================================================================
+    # Controls: symmetric ghost noise (no net shift, prevents shortcut)
+    # ================================================================
+    for mask_ctrl, shifts in [
+        (ctrl & comt, [("serum_glutamate", 0.5, 2.0),
+                        ("reduced_glutathione", -3, 6)]),
+        (ctrl & ~comt, [("serum_glutamate", -0.3, 1.5),
+                         ("reduced_glutathione", 2, 5)]),
+        (ctrl & bdnf, [("il6", 0.1, 0.3),
+                        ("tnf_alpha", 0.08, 0.2)]),
+        (ctrl & drd2, [("triglycerides", 1.5, 3),
+                        ("hdl", -0.3, 1.2)]),
+    ]:
+        nm = mask_ctrl.sum()
+        if nm > 0:
+            for col, mu, sd in shifts:
+                data[col][mask_ctrl] += np.random.normal(mu, sd, nm)
+
+    return data
+
+
+# ============================================================================
+# 6. Post-hoc correlation tuning
+# ============================================================================
+
+def tune_correlations(data, n):
+    """
+    Reinforce biologically expected correlations without adding
+    case/control signal.
+    """
+    # GSH–cytokine inverse coupling
+    il6_z = (data["il6"] - np.nanmean(data["il6"])) / np.nanstd(data["il6"])
+    tnf_z = (data["tnf_alpha"] - np.nanmean(data["tnf_alpha"])) / np.nanstd(data["tnf_alpha"])
+    il8_z = (data["il8"] - np.nanmean(data["il8"])) / np.nanstd(data["il8"])
+    cytokine_z = (il6_z + tnf_z + il8_z) / 3.0
+
+    data["reduced_glutathione"] = np.clip(
+        data["reduced_glutathione"] - cytokine_z * 15, 400, 1300
+    ).round(1)
+
+    # TG → LDL mild coupling
+    tg_z = (data["triglycerides"] - np.nanmean(data["triglycerides"])) / np.nanstd(data["triglycerides"])
+    data["ldl"] = np.clip(data["ldl"] + tg_z * 4, 50, 220).round(1)
+
+    # Lipid → phospholipid coupling
+    ldl_z = (data["ldl"] - np.nanmean(data["ldl"])) / np.nanstd(data["ldl"])
+    lipid_z = (tg_z + ldl_z) / 2
+    data["total_phospholipids"] = np.clip(
+        data["total_phospholipids"] + lipid_z * 5, 100, 350
+    ).round(1)
+
+    # Refresh VLDL from TG
+    data["vldl"] = np.clip(
+        data["triglycerides"] / 5.0 + np.random.normal(0, 3.5, n), 5, 80
+    ).round(1)
+
+    # Re-clip everything to physiological ranges
+    clips = {
+        "serum_glutamate": (10, 120), "serine": (40, 200),
+        "alanine": (100, 600), "lactate": (0.3, 3.5),
+        "citrate": (40, 220), "ornithine": (15, 140),
+        "citrulline": (8, 70), "arginine": (20, 160),
+        "triglycerides": (40, 400), "ldl": (50, 220),
+        "hdl": (20, 95), "vldl": (5, 80),
+        "total_phospholipids": (100, 350), "sphingolipids": (100, 500),
+        "reduced_glutathione": (400, 1300), "nitric_oxide": (8, 80),
+        "il6": (0.3, 20), "tnf_alpha": (0.5, 22), "il8": (1.0, 30),
+    }
+    for col, (lo, hi) in clips.items():
+        data[col] = np.clip(data[col], lo, hi)
+        if col in ("lactate",):
+            data[col] = np.round(data[col], 2)
+        elif col in ("il6", "tnf_alpha", "il8"):
+            data[col] = np.round(data[col], 2)
+        else:
+            data[col] = np.round(data[col], 1)
+
+    return data
+
+
+# ============================================================================
+# 7. Introduce ~5 % missing data at random
 # ============================================================================
 
 def introduce_missing(df, frac=0.05, exclude_cols=None):
@@ -469,19 +491,14 @@ def introduce_missing(df, frac=0.05, exclude_cols=None):
 
 
 # ============================================================================
-# 7. Data Dictionary
+# 8. Data Dictionary
 # ============================================================================
 
 DATA_DICTIONARY = pd.DataFrame([
-    # --- Identifiers & outcome ---
     ("subject_id",   "int",          "-",       "Unique subject identifier"),
     ("diagnosis",    "int (binary)",  "-",       "Outcome: 1 = schizophrenia, 0 = healthy control"),
-
-    # --- Demographics ---
     ("age",          "int",          "years",   "Age at enrollment (18-70)"),
     ("sex",          "int (binary)",  "-",       "Biological sex: 1 = male, 0 = female"),
-
-    # --- Genetic variants (8 genes) ---
     ("C4A_variant_present",     "int (binary)", "0/1",   "Reported variant in complement C4A gene detected (MHC locus)"),
     ("C4A_variant_id",          "string",       "-",     "rsID of detected C4A variant"),
     ("DRD2_variant_present",    "int (binary)", "0/1",   "Reported variant in dopamine receptor D2 gene detected"),
@@ -498,32 +515,22 @@ DATA_DICTIONARY = pd.DataFrame([
     ("COMT_variant_id",         "string",       "-",     "rsID of detected COMT variant"),
     ("BDNF_variant_present",    "int (binary)", "0/1",   "Reported variant in brain-derived neurotrophic factor gene detected"),
     ("BDNF_variant_id",         "string",       "-",     "rsID of detected BDNF variant"),
-
-    # --- Amino acids & metabolites ---
     ("serum_glutamate", "float", "µmol/L",  "Serum glutamate; primary excitatory neurotransmitter precursor"),
     ("serine",          "float", "µmol/L",  "Serum L-serine; NMDA receptor co-agonist precursor"),
     ("alanine",         "float", "µmol/L",  "Serum L-alanine; gluconeogenic amino acid"),
     ("lactate",         "float", "mmol/L",  "Serum lactate; glycolysis end-product / energy metabolism marker"),
     ("citrate",         "float", "µmol/L",  "Serum citrate; TCA cycle intermediate"),
-
-    # --- Urea cycle ---
     ("ornithine",   "float", "µmol/L",  "Serum ornithine; urea cycle intermediate"),
     ("citrulline",  "float", "µmol/L",  "Serum citrulline; urea cycle intermediate / NO synthesis marker"),
     ("arginine",    "float", "µmol/L",  "Serum L-arginine; NO synthase substrate / urea cycle"),
-
-    # --- Lipid panel ---
     ("triglycerides",       "float", "mg/dL",  "Serum triglycerides"),
     ("ldl",                 "float", "mg/dL",  "Low-density lipoprotein cholesterol"),
     ("hdl",                 "float", "mg/dL",  "High-density lipoprotein cholesterol"),
     ("vldl",                "float", "mg/dL",  "Very low-density lipoprotein cholesterol (≈ TG/5)"),
     ("total_phospholipids", "float", "mg/dL",  "Total serum phospholipids"),
     ("sphingolipids",       "float", "µmol/L", "Serum sphingolipids (ceramide pathway)"),
-
-    # --- Redox / oxidative stress ---
     ("reduced_glutathione", "float", "µmol/L", "Reduced glutathione (GSH); major intracellular antioxidant"),
     ("nitric_oxide",        "float", "µmol/L", "Serum nitric oxide metabolites (NOx); reflects NO bioavailability"),
-
-    # --- Inflammatory cytokines ---
     ("il6",       "float", "pg/mL", "Interleukin-6; pro-inflammatory cytokine"),
     ("tnf_alpha", "float", "pg/mL", "Tumor necrosis factor alpha; pro-inflammatory cytokine"),
     ("il8",       "float", "pg/mL", "Interleukin-8 (CXCL8); pro-inflammatory chemokine"),
@@ -531,7 +538,7 @@ DATA_DICTIONARY = pd.DataFrame([
 
 
 # ============================================================================
-# 8. Main Generation Pipeline
+# 9. Main Generation Pipeline
 # ============================================================================
 
 def main():
@@ -543,16 +550,19 @@ def main():
     # 2. Genetic variants
     gen_data = generate_genetic_variants(N_CASES, N_CONTROLS)
 
-    # 3. Latent polygenic score
-    severity = compute_polygenic_score(diagnosis, age, sex, gen_data)
+    # 3. Baseline biomarkers (SAME distribution for both groups)
+    data = generate_baseline_biomarkers(N_TOTAL, age, sex)
 
-    # 4. Biomarker blocks
-    amino = generate_amino_acids_and_metabolites(diagnosis, severity, age, sex)
-    lipids = generate_lipid_panel(diagnosis, severity, age, sex)
-    redox = generate_redox_and_no(diagnosis, severity)
-    cytokines = generate_inflammatory_cytokines(diagnosis, severity)
+    # 4. Apply weak linear shifts (d ≈ 0.08-0.15 per biomarker)
+    data = apply_weak_main_effects(data, diagnosis)
 
-    # 5. Assemble DataFrame
+    # 5. Apply STRONG nonlinear interactions (the real signal for ML)
+    data = apply_nonlinear_interactions(data, diagnosis, age, sex, gen_data)
+
+    # 6. Correlation tuning
+    data = tune_correlations(data, N_TOTAL)
+
+    # 7. Assemble DataFrame
     df = pd.DataFrame({
         "subject_id": np.arange(1, N_TOTAL + 1),
         "diagnosis": diagnosis,
@@ -560,20 +570,22 @@ def main():
         "sex": sex,
     })
 
-    # Genetic columns
     for gene in VARIANT_CATALOG:
         df[f"{gene}_variant_present"] = gen_data[f"{gene}_variant_present"]
         df[f"{gene}_variant_id"] = gen_data[f"{gene}_variant_id"]
 
-    # Biochemical / metabolomic columns
-    for block in [amino, lipids, redox, cytokines]:
-        for k, v in block.items():
-            df[k] = v
+    biomarker_cols = [
+        "serum_glutamate", "serine", "alanine", "lactate", "citrate",
+        "ornithine", "citrulline", "arginine",
+        "triglycerides", "ldl", "hdl", "vldl",
+        "total_phospholipids", "sphingolipids",
+        "reduced_glutathione", "nitric_oxide",
+        "il6", "tnf_alpha", "il8",
+    ]
+    for col in biomarker_cols:
+        df[col] = data[col]
 
-    # 6. Inject additional correlation structure
-    df = inject_correlations(df, diagnosis)
-
-    # 7. Introduce ~5 % missing data (preserve identifiers / genetic binary)
+    # 8. Introduce ~5 % missing data
     exclude = (
         ["subject_id", "diagnosis"]
         + [f"{g}_variant_present" for g in VARIANT_CATALOG]
@@ -581,7 +593,7 @@ def main():
     )
     df = introduce_missing(df, frac=0.05, exclude_cols=exclude)
 
-    # 8. Save outputs
+    # 9. Save outputs
     dataset_path = "schizophrenia_synthetic_dataset.csv"
     dict_path = "schizophrenia_data_dictionary.csv"
 
@@ -598,7 +610,6 @@ def main():
     print("=" * 60)
 
     print(f"\nDiagnosis distribution:\n{df['diagnosis'].value_counts().to_string()}")
-    # Report missing fraction only on columns subject to random missingness
     numeric_cols = [c for c in df.columns
                     if c not in exclude and pd.api.types.is_numeric_dtype(df[c])]
     print(f"\nMissing-data fraction (numeric biomarker cols): "
@@ -620,6 +631,22 @@ def main():
         c = df.loc[df["diagnosis"] == 1, col].mean() * 100
         h = df.loc[df["diagnosis"] == 0, col].mean() * 100
         print(f"  {gene:>8s}  cases={c:5.1f}%  controls={h:5.1f}%")
+
+    print(f"\nInteraction subgroup sizes (cases only):")
+    case = diagnosis == 1
+    c4a = gen_data["C4A_variant_present"].astype(bool)
+    comt_v = gen_data["COMT_variant_present"].astype(bool)
+    drd2 = gen_data["DRD2_variant_present"].astype(bool)
+    bdnf = gen_data["BDNF_variant_present"].astype(bool)
+    grin2a = gen_data["GRIN2A_variant_present"].astype(bool)
+    grm3 = gen_data["GRM3_variant_present"].astype(bool)
+    disc1 = gen_data["DISC1_variant_present"].astype(bool)
+    print(f"  C4A × COMT:           {(case & c4a & comt_v).sum()}")
+    print(f"  DRD2 × BDNF:          {(case & drd2 & bdnf).sum()}")
+    print(f"  GRIN2A × GRM3:        {(case & grin2a & grm3).sum()}")
+    print(f"  Young × COMT:         {(case & (age < 30) & comt_v).sum()}")
+    print(f"  DISC1 × BDNF:         {(case & disc1 & bdnf).sum()}")
+    print(f"  C4A × DRD2 × male:    {(case & c4a & drd2 & (sex == 1)).sum()}")
 
     print(f"\nBiomarker means (cases vs controls):")
     bio_cols = [
