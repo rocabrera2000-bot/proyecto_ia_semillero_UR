@@ -1,0 +1,45 @@
+variable,data_type,description,unit
+subject_id,int,Unique subject identifier,-
+diagnosis,int (binary),"Outcome: 1 = hemochromatosis, 0 = control",-
+age,int,Age at enrollment,years
+sex,int (binary),"Biological sex: 1 = male, 0 = female",-
+HFE_variant_present,int (binary),Pathogenic/likely pathogenic HFE variant detected,0/1
+HFE_variant_id,string,"rsID of detected HFE variant (e.g., rs1800562 C282Y)",-
+HJV_variant_present,int (binary),Pathogenic/likely pathogenic HJV variant detected,0/1
+HJV_variant_id,string,rsID of detected HJV variant,-
+HAMP_variant_present,int (binary),Pathogenic/likely pathogenic HAMP variant detected,0/1
+HAMP_variant_id,string,rsID of detected HAMP variant,-
+TFR2_variant_present,int (binary),Pathogenic/likely pathogenic TFR2 variant detected,0/1
+TFR2_variant_id,string,rsID of detected TFR2 variant,-
+SLC40A1_variant_present,int (binary),Pathogenic/likely pathogenic SLC40A1 variant detected,0/1
+SLC40A1_variant_id,string,rsID of detected SLC40A1 variant,-
+hemoglobin,float,Hemoglobin concentration,g/dL
+hematocrit,float,Hematocrit (packed cell volume),%
+rbc_count,float,Red blood cell count,×10^12/L
+mcv,float,Mean corpuscular volume,fL
+mch,float,Mean corpuscular hemoglobin,pg
+mchc,float,Mean corpuscular hemoglobin concentration,g/dL
+rdw,float,Red cell distribution width,%
+wbc_count,float,White blood cell count,×10^9/L
+neutrophils_pct,float,Neutrophils (percentage of WBC),%
+lymphocytes_pct,float,Lymphocytes (percentage of WBC),%
+monocytes_pct,float,Monocytes (percentage of WBC),%
+eosinophils_pct,float,Eosinophils (percentage of WBC),%
+basophils_pct,float,Basophils (percentage of WBC),%
+neutrophils_abs,float,Neutrophils (absolute count),×10^9/L
+lymphocytes_abs,float,Lymphocytes (absolute count),×10^9/L
+monocytes_abs,float,Monocytes (absolute count),×10^9/L
+eosinophils_abs,float,Eosinophils (absolute count),×10^9/L
+basophils_abs,float,Basophils (absolute count),×10^9/L
+platelet_count,int,Platelet count,×10^9/L
+serum_iron,float,Serum iron,µg/dL
+ferritin,float,Serum ferritin,ng/mL
+tibc,float,Total iron-binding capacity,µg/dL
+uibc,float,Unsaturated iron-binding capacity (TIBC − serum iron),µg/dL
+transferrin_saturation,float,Transferrin saturation (serum iron / TIBC × 100),%
+ast,float,Aspartate aminotransferase,U/L
+alt,float,Alanine aminotransferase,U/L
+ggt,float,Gamma-glutamyl transferase,U/L
+apri,float,AST-to-Platelet Ratio Index: (AST/ULN_AST)/platelets×100; ULN_AST=40,-
+fib4,float,Fibrosis-4 Index: (age×AST)/(platelets×√ALT),-
+gpr,float,GGT-to-Platelet Ratio: (GGT/ULN_GGT)/platelets×100; ULN_GGT=60,-
