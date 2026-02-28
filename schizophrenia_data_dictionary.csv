@@ -1,0 +1,40 @@
+variable,data_type,unit,description
+subject_id,int,-,Unique subject identifier
+diagnosis,int (binary),-,"Outcome: 1 = schizophrenia, 0 = healthy control"
+age,int,years,Age at enrollment (18-70)
+sex,int (binary),-,"Biological sex: 1 = male, 0 = female"
+C4A_variant_present,int (binary),0/1,Reported variant in complement C4A gene detected (MHC locus)
+C4A_variant_id,string,-,rsID of detected C4A variant
+DRD2_variant_present,int (binary),0/1,Reported variant in dopamine receptor D2 gene detected
+DRD2_variant_id,string,-,rsID of detected DRD2 variant
+GRM3_variant_present,int (binary),0/1,Reported variant in metabotropic glutamate receptor 3 gene detected
+GRM3_variant_id,string,-,rsID of detected GRM3 variant
+GRIN2A_variant_present,int (binary),0/1,Reported variant in NMDA receptor subunit 2A gene detected
+GRIN2A_variant_id,string,-,rsID of detected GRIN2A variant
+SLC39A8_variant_present,int (binary),0/1,Reported variant in zinc transporter SLC39A8 gene detected
+SLC39A8_variant_id,string,-,rsID of detected SLC39A8 variant
+DISC1_variant_present,int (binary),0/1,Reported variant in Disrupted-in-Schizophrenia 1 gene detected
+DISC1_variant_id,string,-,rsID of detected DISC1 variant
+COMT_variant_present,int (binary),0/1,Reported variant in catechol-O-methyltransferase gene detected
+COMT_variant_id,string,-,rsID of detected COMT variant
+BDNF_variant_present,int (binary),0/1,Reported variant in brain-derived neurotrophic factor gene detected
+BDNF_variant_id,string,-,rsID of detected BDNF variant
+serum_glutamate,float,µmol/L,Serum glutamate; primary excitatory neurotransmitter precursor
+serine,float,µmol/L,Serum L-serine; NMDA receptor co-agonist precursor
+alanine,float,µmol/L,Serum L-alanine; gluconeogenic amino acid
+lactate,float,mmol/L,Serum lactate; glycolysis end-product / energy metabolism marker
+citrate,float,µmol/L,Serum citrate; TCA cycle intermediate
+ornithine,float,µmol/L,Serum ornithine; urea cycle intermediate
+citrulline,float,µmol/L,Serum citrulline; urea cycle intermediate / NO synthesis marker
+arginine,float,µmol/L,Serum L-arginine; NO synthase substrate / urea cycle
+triglycerides,float,mg/dL,Serum triglycerides
+ldl,float,mg/dL,Low-density lipoprotein cholesterol
+hdl,float,mg/dL,High-density lipoprotein cholesterol
+vldl,float,mg/dL,Very low-density lipoprotein cholesterol (≈ TG/5)
+total_phospholipids,float,mg/dL,Total serum phospholipids
+sphingolipids,float,µmol/L,Serum sphingolipids (ceramide pathway)
+reduced_glutathione,float,µmol/L,Reduced glutathione (GSH); major intracellular antioxidant
+nitric_oxide,float,µmol/L,Serum nitric oxide metabolites (NOx); reflects NO bioavailability
+il6,float,pg/mL,Interleukin-6; pro-inflammatory cytokine
+tnf_alpha,float,pg/mL,Tumor necrosis factor alpha; pro-inflammatory cytokine
+il8,float,pg/mL,Interleukin-8 (CXCL8); pro-inflammatory chemokine
