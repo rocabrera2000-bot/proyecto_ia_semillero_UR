@@ -79,11 +79,11 @@ VARIANT_CATALOG = {
 # Carrier frequencies: (prob in cases, prob in controls)
 # HFE variants are common; non-HFE genes are rare
 GENE_FREQ = {
-    "HFE":     (0.82, 0.12),
-    "HJV":     (0.08, 0.005),
-    "HAMP":    (0.06, 0.004),
-    "TFR2":    (0.07, 0.006),
-    "SLC40A1": (0.09, 0.008),
+    "HFE":     (0.72, 0.15),
+    "HJV":     (0.08, 0.01),
+    "HAMP":    (0.06, 0.008),
+    "TFR2":    (0.07, 0.01),
+    "SLC40A1": (0.09, 0.012),
 }
 
 
@@ -130,22 +130,22 @@ def compute_severity(diagnosis, age, sex, genetic_data):
     for gene, w in gene_weights.items():
         gene_burden += genetic_data[f"{gene}_variant_present"] * w
 
-    # Severity for cases
+    # Severity for cases — moderate with high variance for overlap
     case_mask = diagnosis == 1
     severity[case_mask] = (
-        0.25
-        + 0.30 * gene_burden[case_mask]
-        + 0.10 * ((age[case_mask] - 18) / 67)
-        + 0.08 * sex[case_mask]
-        + np.random.normal(0, 0.08, case_mask.sum())
+        0.18
+        + 0.22 * gene_burden[case_mask]
+        + 0.08 * ((age[case_mask] - 18) / 67)
+        + 0.06 * sex[case_mask]
+        + np.random.normal(0, 0.12, case_mask.sum())
     )
-    # Severity for controls (very low, but not always zero)
+    # Severity for controls — low but with some upward noise
     ctrl_mask = diagnosis == 0
     severity[ctrl_mask] = (
-        0.02
-        + 0.05 * gene_burden[ctrl_mask]
-        + 0.01 * ((age[ctrl_mask] - 18) / 67)
-        + np.random.normal(0, 0.03, ctrl_mask.sum())
+        0.05
+        + 0.08 * gene_burden[ctrl_mask]
+        + 0.02 * ((age[ctrl_mask] - 18) / 67)
+        + np.random.normal(0, 0.06, ctrl_mask.sum())
     )
     severity = np.clip(severity, 0, 1)
     return severity
@@ -161,11 +161,11 @@ def generate_iron_studies(diagnosis, severity, sex):
     case_mask = diagnosis == 1
 
     # --- Serum iron (µg/dL) ---
-    # Normal: 60-170; elevated in overload but with substantial variability
+    # Normal: 60-170; elevated in overload but with substantial overlap
     serum_iron = np.where(
         case_mask,
-        np.random.normal(155 + severity * 60, 40, n),
-        np.random.normal(95, 28, n),
+        np.random.normal(130 + severity * 40, 45, n),
+        np.random.normal(100, 32, n),
     )
     # Males tend slightly higher
     serum_iron += sex * np.random.normal(8, 3, n)
@@ -175,8 +175,8 @@ def generate_iron_studies(diagnosis, severity, sex):
     # Normal: 250-370; tends lower in iron overload but with overlap
     tibc = np.where(
         case_mask,
-        np.random.normal(280 - severity * 40, 35, n),
-        np.random.normal(320, 35, n),
+        np.random.normal(290 - severity * 30, 40, n),
+        np.random.normal(320, 38, n),
     )
     tibc = np.clip(tibc, 180, 450)
 
@@ -189,19 +189,20 @@ def generate_iron_studies(diagnosis, severity, sex):
     tsat = np.clip(tsat, 5, 100)
 
     # --- Ferritin (ng/mL) ---
-    # Normal male: 20-250; female: 10-120; markedly elevated in overload
+    # Normal male: 20-250; female: 10-120; elevated in overload with
+    # wide spread to create meaningful overlap between groups
     base_ferritin = np.where(sex == 1, 120, 55)
     ferritin = np.where(
         case_mask,
         np.random.lognormal(
-            np.log(base_ferritin + severity * 1200 + 50), 0.45, n
+            np.log(base_ferritin + severity * 400 + 40), 0.55, n
         ),
-        np.random.lognormal(np.log(base_ferritin + 10), 0.40, n),
+        np.random.lognormal(np.log(base_ferritin + 15), 0.50, n),
     )
     # Allow a few very high ferritins in severe cases (clinically plausible)
-    extreme_mask = case_mask & (severity > 0.75)
-    ferritin[extreme_mask] *= np.random.uniform(1.2, 2.5, extreme_mask.sum())
-    ferritin = np.clip(ferritin, 5, 8000)
+    extreme_mask = case_mask & (severity > 0.80)
+    ferritin[extreme_mask] *= np.random.uniform(1.1, 1.8, extreme_mask.sum())
+    ferritin = np.clip(ferritin, 5, 5000)
 
     return serum_iron, tibc, uibc, tsat, ferritin
 
@@ -215,34 +216,34 @@ def generate_liver_enzymes(diagnosis, severity, sex, age):
     n = len(diagnosis)
     case_mask = diagnosis == 1
 
-    # Hepatic involvement probability increases with severity
+    # Hepatic involvement probability increases with severity (subset only)
     hepatic = np.zeros(n, dtype=bool)
-    hepatic[case_mask] = np.random.random(case_mask.sum()) < (0.3 + 0.5 * severity[case_mask])
+    hepatic[case_mask] = np.random.random(case_mask.sum()) < (0.2 + 0.35 * severity[case_mask])
 
     # --- AST (U/L) ---
     ast = np.where(
         hepatic,
-        np.random.normal(55 + severity * 60, 18, n),
-        np.random.normal(24, 7, n),
+        np.random.normal(42 + severity * 35, 15, n),
+        np.random.normal(25, 8, n),
     )
     ast += sex * np.random.normal(3, 1.5, n)  # slightly higher in males
-    ast = np.clip(ast, 8, 250).round(1)
+    ast = np.clip(ast, 8, 200).round(1)
 
     # --- ALT (U/L) ---
     # Correlated with AST
-    alt = ast * np.random.normal(1.15, 0.15, n)
+    alt = ast * np.random.normal(1.1, 0.15, n)
     alt = np.where(
         hepatic,
-        alt + np.random.normal(10, 8, n),
-        np.random.normal(22, 8, n),
+        alt + np.random.normal(5, 6, n),
+        np.random.normal(23, 9, n),
     )
-    alt = np.clip(alt, 5, 280).round(1)
+    alt = np.clip(alt, 5, 220).round(1)
 
     # --- GGT (U/L) ---
     ggt = np.where(
         hepatic,
-        np.random.normal(65 + severity * 80, 25, n),
-        np.random.normal(28, 12, n),
+        np.random.normal(50 + severity * 50, 22, n),
+        np.random.normal(30, 14, n),
     )
     ggt += sex * np.random.normal(8, 3, n)
     ggt += (age - 40) * 0.15  # age-related increase
